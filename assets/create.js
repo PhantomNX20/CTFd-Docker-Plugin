@@ -10,7 +10,10 @@ var path = "/containers/api/images";
 var xhr = new XMLHttpRequest();
 xhr.open("GET", path, true);
 xhr.setRequestHeader("Accept", "application/json");
-xhr.setRequestHeader("CSRF-Token", init.csrfNonce);
+var csrfNonce = (window.init && init.csrfNonce) || (window.CTFd && CTFd.config && CTFd.config.csrfNonce) || "";
+if (csrfNonce) {
+	xhr.setRequestHeader("CSRF-Token", csrfNonce);
+}
 xhr.send();
 xhr.onload = function () {
 	var data = JSON.parse(this.responseText);

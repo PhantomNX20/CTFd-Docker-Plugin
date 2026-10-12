@@ -1,6 +1,8 @@
 import atexit
 import time
 import json
+import socket
+import random
 
 from flask import Flask
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -42,6 +44,39 @@ class ContainerManager:
         except ContainerException:
             print("Docker could not initialize or connect.")
             return
+    def _get_free_port(self):
+        # 1. Recupera il range
+        try:
+            min_port = int(self.settings.get("container_min_port") or 10000)
+        except (ValueError, TypeError):
+            min_port = 10000
+
+        try:
+            max_port = int(self.settings.get("container_max_port") or 10150)
+        except (ValueError, TypeError):
+            max_port = 10150
+
+        # 2. Prendi le porte già usate dal DB
+        with self.app.app_context():
+            used_ports_query = db.session.query(ContainerInfoModel.port).all()
+            used_ports = {int(p[0]) for p in used_ports_query if p[0] is not None}
+
+        # 3. Crea la lista e rimescolala
+        all_ports = list(range(min_port, max_port + 1))
+        random.shuffle(all_ports)
+
+        # 4. Cerca la prima disponibile
+        for port in all_ports:
+            if port in used_ports:
+                continue
+                
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                s.settimeout(0.1)
+                if s.connect_ex(('127.0.0.1', port)) != 0:
+                    print(f"[DEBUG] Porta assegnata: {port}")
+                    return port
+                    
+        raise ContainerException("Nessuna porta disponibile nel range!")
 
     def initialize_connection(self, settings, app) -> None:
         self.settings = settings
@@ -145,16 +180,24 @@ class ContainerManager:
     @run_command
     def create_container(self, image: str, port: int, command: str, volumes: str):
         kwargs = {}
+        
+        # 1. Trova una porta libera nel range
+        host_port = self._get_free_port()
+        
+        # 2. Imposta il limite disco (Storage Opt)
+        # NOTA: Funziona solo con storage driver overlay2 (su XFS con pquota) o btrfs
+        # storage_limit = self.settings.get("container_maxdisk", "256M")
+        # kwargs["storage_opt"] = {"size": storage_limit}
 
-        # Set the memory and CPU limits for the container
+        # Gestione Memoria e CPU (codice esistente)
         if self.settings.get("container_maxmemory"):
             try:
                 mem_limit = int(self.settings.get("container_maxmemory"))
                 if mem_limit > 0:
                     kwargs["mem_limit"] = f"{mem_limit}m"
             except ValueError:
-                ContainerException(
-                    "Configured container memory limit must be an integer")
+                pass 
+
         if self.settings.get("container_maxcpu"):
             try:
                 cpu_period = float(self.settings.get("container_maxcpu"))
@@ -162,28 +205,36 @@ class ContainerManager:
                     kwargs["cpu_quota"] = int(cpu_period * 100000)
                     kwargs["cpu_period"] = 100000
             except ValueError:
-                ContainerException(
-                    "Configured container CPU limit must be a number")
+                pass
 
-        if volumes is not None and volumes != "":
-            print("Volumes:", volumes)
+        if volumes and str(volumes).strip() and str(volumes).strip() != "None":
             try:
-                volumes_dict = json.loads(volumes)
-                kwargs["volumes"] = volumes_dict
+                parsed_volumes = json.loads(volumes)
+                if isinstance(parsed_volumes, dict):
+                    kwargs["volumes"] = parsed_volumes
+                else:
+                    raise ContainerException("Volumes JSON must be an object/dict")
             except json.decoder.JSONDecodeError:
                 raise ContainerException("Volumes JSON string is invalid")
 
         try:
-            return self.client.containers.run(
+            container = self.client.containers.run(
                 image,
-                ports={str(port): None},
+                ports={f"{port}/tcp": host_port}, 
                 command=command,
                 detach=True,
                 auto_remove=True,
                 **kwargs
             )
+            # ATTENZIONE: Aggiungiamo la porta scelta all'oggetto container 
+            # così il plugin può leggerla direttamente senza chiederla a Docker
+            container.assigned_port = host_port
+            return container
+        
         except docker.errors.ImageNotFound:
             raise ContainerException("Docker image not found")
+        except docker.errors.APIError as e:
+            raise ContainerException(f"Errore Docker: {str(e)}")
 
     @run_command
     def get_container_port(self, container_id: str) -> "str|None":
