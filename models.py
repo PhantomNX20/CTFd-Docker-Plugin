@@ -41,12 +41,16 @@ class ContainerInfoModel(db.Model):
         db.Integer, db.ForeignKey("challenges.id", ondelete="CASCADE")
     )
     team_id = db.Column(
-        db.Integer, db.ForeignKey("teams.id", ondelete="CASCADE")
+        db.Integer, db.ForeignKey("teams.id", ondelete="CASCADE"), nullable=True
+    )
+    user_id = db.Column(
+        db.Integer, db.ForeignKey("users.id", ondelete="CASCADE"), nullable=True
     )
     port = db.Column(db.Integer)
     timestamp = db.Column(db.Integer)
     expires = db.Column(db.Integer)
     team = relationship("Teams", foreign_keys=[team_id])
+    user = relationship("Users", foreign_keys=[user_id])
     challenge = relationship(ContainerChallengeModel,
                              foreign_keys=[challenge_id])
 

@@ -11,8 +11,8 @@ from CTFd.models import db, Solves
 from CTFd.plugins import register_plugin_assets_directory
 from CTFd.plugins.challenges import CHALLENGE_CLASSES, BaseChallenge
 from CTFd.utils.decorators import authed_only, admins_only, during_ctf_time_only, ratelimit, require_verified_emails
-from CTFd.utils.user import get_current_user
-from CTFd.utils.modes import get_model
+from CTFd.utils.user import get_current_user, get_current_team
+from CTFd.utils.modes import get_model, get_mode, TEAMS_MODE, USERS_MODE
 
 from .models import ContainerChallengeModel, ContainerInfoModel, ContainerSettingsModel
 from .container_manager import ContainerManager, ContainerException
@@ -183,8 +183,34 @@ def settings_to_dict(settings):
     return {setting.key: setting.value for setting in settings}
 
 
+def check_and_migrate_db(app: Flask):
+    with app.app_context():
+        try:
+            from sqlalchemy import inspect, text
+            inspector = inspect(db.engine)
+            tables = inspector.get_table_names()
+            if "container_info_model" in tables:
+                columns = [c["name"] for c in inspector.get_columns("container_info_model")]
+                if "user_id" not in columns:
+                    with db.engine.connect() as conn:
+                        try:
+                            conn.execute(text("ALTER TABLE container_info_model ADD COLUMN user_id INTEGER REFERENCES users(id) ON DELETE CASCADE"))
+                        except Exception:
+                            conn.execute(text("ALTER TABLE container_info_model ADD COLUMN user_id INTEGER"))
+                        try:
+                            conn.commit()
+                        except Exception:
+                            pass
+        except Exception as e:
+            try:
+                app.logger.warning(f"[CTFd-Docker-Plugin] DB Migration note: {e}")
+            except Exception:
+                pass
+
+
 def load(app: Flask):
     app.db.create_all()
+    check_and_migrate_db(app)
     CHALLENGE_CLASSES["container"] = ContainerChallenge
     register_plugin_assets_directory(app, base_path="/plugins/containers/assets/")
 
@@ -198,6 +224,40 @@ def load(app: Flask):
     def format_time_filter(unix_seconds):
         return datetime.datetime.fromtimestamp(unix_seconds, tz=datetime.timezone.utc).isoformat()
 
+    def get_current_container_identity():
+        user = get_current_user()
+        if not user:
+            return None, None, "User not found"
+
+        try:
+            mode = get_mode()
+        except Exception:
+            mode = TEAMS_MODE if getattr(user, "team", None) is not None else USERS_MODE
+
+        if mode == TEAMS_MODE:
+            team = get_current_team() or getattr(user, "team", None)
+            if not team:
+                return None, None, "Devi far parte di un team per avviare il container."
+            return user, team, None
+        else:
+            return user, None, None
+
+    def get_running_container(chal_id, user=None, team=None):
+        try:
+            mode = get_mode()
+        except Exception:
+            mode = TEAMS_MODE if team is not None else USERS_MODE
+
+        if mode == TEAMS_MODE and team:
+            return ContainerInfoModel.query.filter_by(
+                challenge_id=chal_id, team_id=team.id
+            ).first()
+        elif user:
+            return ContainerInfoModel.query.filter_by(
+                challenge_id=chal_id, user_id=user.id
+            ).first()
+        return None
+
     def kill_container(container_id):
         container = ContainerInfoModel.query.filter_by(container_id=container_id).first()
         if container:
@@ -209,12 +269,12 @@ def load(app: Flask):
             db.session.commit()
         return {"success": "Container killed"}
 
-    def renew_container(chal_id, team_id):
+    def renew_container(chal_id, user=None, team=None):
         challenge = ContainerChallenge.challenge_model.query.filter_by(id=chal_id).first()
         if challenge is None:
             return {"error": "Challenge not found"}, 400
 
-        running_container = ContainerInfoModel.query.filter_by(challenge_id=challenge.id, team_id=team_id).first()
+        running_container = get_running_container(challenge.id, user=user, team=team)
         if running_container is None:
             return {"error": "Container not found."}
 
@@ -223,13 +283,13 @@ def load(app: Flask):
         db.session.commit()
         return {"success": "Container renewed", "expires": expires}
 
-    def create_container(chal_id, team_id):
+    def create_container(chal_id, user=None, team=None):
         challenge = ContainerChallenge.challenge_model.query.filter_by(id=chal_id).first()
         if challenge is None:
             return {"error": "Challenge not found"}, 400
 
-        # Verifica se esiste già un container per il team
-        running_container = ContainerInfoModel.query.filter_by(challenge_id=challenge.id, team_id=team_id).first()
+        # Verifica se esiste già un container per il team o per l'utente
+        running_container = get_running_container(challenge.id, user=user, team=team)
 
         if running_container:
             try:
@@ -248,7 +308,7 @@ def load(app: Flask):
 
         # Creazione nuovo container
         try:
-            # Chiamata al manager che ora restituisce la porta scelta randomicamente
+            # Chiamata al manager che restituisce la porta scelta randomicamente
             created_container = container_manager.create_container(
                 challenge.image, challenge.port, challenge.command, challenge.volumes)
             
@@ -267,11 +327,15 @@ def load(app: Flask):
 
         expires = int(time.time() + container_manager.expiration_seconds)
 
+        team_id = team.id if team else None
+        user_id = user.id if user else None
+
         # Salvataggio nel database
         new_db_entry = ContainerInfoModel(
             container_id=created_container.id,
             challenge_id=challenge.id,
             team_id=team_id,
+            user_id=user_id,
             port=assigned_host_port,
             timestamp=int(time.time()),
             expires=expires
@@ -293,12 +357,12 @@ def load(app: Flask):
     @require_verified_emails
     @ratelimit(method="POST", limit=6, interval=60)
     def route_request_container():
-        user = get_current_user()
         if not request.json or "chal_id" not in request.json:
             return {"error": "Invalid request"}, 400
-        if not user or not user.team:
-            return {"error": "User or Team not found"}, 400
-        return create_container(request.json.get("chal_id"), user.team.id)
+        user, team, err = get_current_container_identity()
+        if err:
+            return {"error": err}, 400
+        return create_container(request.json.get("chal_id"), user=user, team=team)
 
     @containers_bp.route('/api/renew', methods=['POST'])
     @authed_only
@@ -306,10 +370,12 @@ def load(app: Flask):
     @require_verified_emails
     @ratelimit(method="POST", limit=6, interval=60)
     def route_renew_container():
-        user = get_current_user()
-        if not user or not user.team:
-            return {"error": "Unauthorized"}, 400
-        return renew_container(request.json.get("chal_id"), user.team.id)
+        if not request.json or "chal_id" not in request.json:
+            return {"error": "Invalid request"}, 400
+        user, team, err = get_current_container_identity()
+        if err:
+            return {"error": err}, 400
+        return renew_container(request.json.get("chal_id"), user=user, team=team)
 
     @containers_bp.route('/api/reset', methods=['POST'])
     @authed_only
@@ -317,18 +383,27 @@ def load(app: Flask):
     @require_verified_emails
     @ratelimit(method="POST", limit=6, interval=60)
     def route_restart_container():
-        user = get_current_user()
+        if not request.json or "chal_id" not in request.json:
+            return {"error": "Invalid request"}, 400
+        user, team, err = get_current_container_identity()
+        if err:
+            return {"error": err}, 400
         chal_id = request.json.get("chal_id")
-        running_container = ContainerInfoModel.query.filter_by(challenge_id=chal_id, team_id=user.team.id).first()
+        running_container = get_running_container(chal_id, user=user, team=team)
         if running_container:
             kill_container(running_container.container_id)
-        return create_container(chal_id, user.team.id)
+        return create_container(chal_id, user=user, team=team)
 
     @containers_bp.route('/api/stop', methods=['POST'])
     @authed_only
     def route_stop_container():
-        user = get_current_user()
-        running_container = ContainerInfoModel.query.filter_by(challenge_id=request.json.get("chal_id"), team_id=user.team.id).first()
+        if not request.json or "chal_id" not in request.json:
+            return {"error": "Invalid request"}, 400
+        user, team, err = get_current_container_identity()
+        if err:
+            return {"error": err}, 400
+        chal_id = request.json.get("chal_id")
+        running_container = get_running_container(chal_id, user=user, team=team)
         if running_container:
             return kill_container(running_container.container_id)
         return {"error": "No container found"}, 400
