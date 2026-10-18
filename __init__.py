@@ -11,8 +11,14 @@ from CTFd.models import db, Solves
 from CTFd.plugins import register_plugin_assets_directory
 from CTFd.plugins.challenges import CHALLENGE_CLASSES, BaseChallenge
 from CTFd.utils.decorators import authed_only, admins_only, during_ctf_time_only, ratelimit, require_verified_emails
+from CTFd.utils import get_config
 from CTFd.utils.user import get_current_user, get_current_team
-from CTFd.utils.modes import get_model, get_mode, TEAMS_MODE, USERS_MODE
+from CTFd.utils.modes import get_model, TEAMS_MODE, USERS_MODE
+try:
+    from CTFd.utils.config import is_teams_mode
+except ImportError:
+    def is_teams_mode():
+        return get_config("user_mode") == TEAMS_MODE
 
 from .models import ContainerChallengeModel, ContainerInfoModel, ContainerSettingsModel
 from .container_manager import ContainerManager, ContainerException
@@ -227,28 +233,18 @@ def load(app: Flask):
     def get_current_container_identity():
         user = get_current_user()
         if not user:
-            return None, None, "User not found"
+            return None, None, "User not authenticated"
 
-        try:
-            mode = get_mode()
-        except Exception:
-            mode = TEAMS_MODE if getattr(user, "team", None) is not None else USERS_MODE
-
-        if mode == TEAMS_MODE:
+        if is_teams_mode():
             team = get_current_team() or getattr(user, "team", None)
             if not team:
-                return None, None, "Devi far parte di un team per avviare il container."
+                return None, None, "Devi far parte di un team per avviare il container in modalità Team."
             return user, team, None
         else:
             return user, None, None
 
     def get_running_container(chal_id, user=None, team=None):
-        try:
-            mode = get_mode()
-        except Exception:
-            mode = TEAMS_MODE if team is not None else USERS_MODE
-
-        if mode == TEAMS_MODE and team:
+        if is_teams_mode() and team:
             return ContainerInfoModel.query.filter_by(
                 challenge_id=chal_id, team_id=team.id
             ).first()
