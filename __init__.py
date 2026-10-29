@@ -351,7 +351,7 @@ def load(app: Flask):
     @authed_only
     @during_ctf_time_only
     @require_verified_emails
-    @ratelimit(method="POST", limit=6, interval=60)
+    @ratelimit(method="POST", limit=10000, interval=60)
     def route_request_container():
         if not request.json or "chal_id" not in request.json:
             return {"error": "Invalid request"}, 400
@@ -364,7 +364,7 @@ def load(app: Flask):
     @authed_only
     @during_ctf_time_only
     @require_verified_emails
-    @ratelimit(method="POST", limit=6, interval=60)
+    @ratelimit(method="POST", limit=10000, interval=60)
     def route_renew_container():
         if not request.json or "chal_id" not in request.json:
             return {"error": "Invalid request"}, 400
@@ -377,7 +377,7 @@ def load(app: Flask):
     @authed_only
     @during_ctf_time_only
     @require_verified_emails
-    @ratelimit(method="POST", limit=6, interval=60)
+    @ratelimit(method="POST", limit=10000, interval=60)
     def route_restart_container():
         if not request.json or "chal_id" not in request.json:
             return {"error": "Invalid request"}, 400
