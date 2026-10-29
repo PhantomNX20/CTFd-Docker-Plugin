@@ -4,13 +4,18 @@ import time
 import json
 import datetime
 import math
+from functools import wraps
 
 from flask import Blueprint, request, Flask, render_template, url_for, redirect, flash
 
 from CTFd.models import db, Solves
 from CTFd.plugins import register_plugin_assets_directory
 from CTFd.plugins.challenges import CHALLENGE_CLASSES, BaseChallenge
-from CTFd.utils.decorators import authed_only, admins_only, during_ctf_time_only, ratelimit, require_verified_emails
+from CTFd.utils.decorators import authed_only, admins_only, during_ctf_time_only, require_verified_emails
+try:
+    from CTFd.cache import cache
+except ImportError:
+    cache = None
 from CTFd.utils import get_config
 from CTFd.utils.user import get_current_user, get_current_team
 from CTFd.utils.modes import get_model, TEAMS_MODE, USERS_MODE
@@ -233,6 +238,10 @@ def load(app: Flask):
         container_settings["container_min_port"] = "10000"
     if not container_settings.get("container_max_port"):
         container_settings["container_max_port"] = "10150"
+    if not container_settings.get("container_ratelimit_limit"):
+        container_settings["container_ratelimit_limit"] = "10"
+    if not container_settings.get("container_ratelimit_interval"):
+        container_settings["container_ratelimit_interval"] = "60"
 
     container_manager = ContainerManager(container_settings, app)
 
@@ -242,6 +251,86 @@ def load(app: Flask):
     @containers_bp.app_template_filter("format_time")
     def format_time_filter(unix_seconds):
         return datetime.datetime.fromtimestamp(unix_seconds, tz=datetime.timezone.utc).isoformat()
+
+    _local_ratelimit_cache = {}
+
+    def get_rate_limit_identity():
+        user, team, err = get_current_container_identity()
+        if team:
+            return f"team:{team.id}", True
+        if user:
+            return f"user:{user.id}", False
+        return f"ip:{request.remote_addr}", False
+
+    def check_rate_limit(identity_key, limit, interval):
+        now = time.time()
+        cache_key = f"container_ratelimit:{identity_key}"
+        timestamps = None
+
+        if cache is not None:
+            try:
+                timestamps = cache.get(cache_key)
+            except Exception:
+                timestamps = None
+
+        if timestamps is None:
+            timestamps = _local_ratelimit_cache.get(cache_key, [])
+
+        valid_timestamps = [t for t in timestamps if now - t < interval]
+
+        if len(valid_timestamps) >= limit:
+            oldest = min(valid_timestamps)
+            retry_after = int(math.ceil(interval - (now - oldest)))
+            return False, max(1, retry_after)
+
+        valid_timestamps.append(now)
+
+        if cache is not None:
+            try:
+                cache.set(cache_key, valid_timestamps, timeout=interval + 10)
+            except Exception:
+                pass
+
+        _local_ratelimit_cache[cache_key] = valid_timestamps
+
+        if len(_local_ratelimit_cache) > 1000:
+            for k in list(_local_ratelimit_cache.keys()):
+                ts = _local_ratelimit_cache.get(k, [])
+                if not ts or now - ts[-1] >= interval:
+                    _local_ratelimit_cache.pop(k, None)
+
+        return True, 0
+
+    def team_or_user_ratelimit():
+        def decorator(f):
+            @wraps(f)
+            def wrapper(*args, **kwargs):
+                limit = 10
+                interval = 60
+                if container_manager and hasattr(container_manager, "settings"):
+                    try:
+                        limit = int(container_manager.settings.get("container_ratelimit_limit") or 10)
+                    except (ValueError, TypeError):
+                        limit = 10
+                    try:
+                        interval = int(container_manager.settings.get("container_ratelimit_interval") or 60)
+                    except (ValueError, TypeError):
+                        interval = 60
+
+                if limit <= 0:
+                    return f(*args, **kwargs)
+
+                identity_key, is_team = get_rate_limit_identity()
+                allowed, retry_after = check_rate_limit(identity_key, limit=limit, interval=interval)
+                if not allowed:
+                    entity_str = "della tua squadra" if is_team else "del tuo account"
+                    return {
+                        "error": f"Troppe richieste da parte {entity_str}. Attendi {retry_after} secondi prima di riprovare."
+                    }, 429
+
+                return f(*args, **kwargs)
+            return wrapper
+        return decorator
 
     def get_current_container_identity():
         user = get_current_user()
@@ -364,7 +453,7 @@ def load(app: Flask):
     @authed_only
     @during_ctf_time_only
     @require_verified_emails
-    @ratelimit(method="POST", limit=10000, interval=60)
+    @team_or_user_ratelimit()
     def route_request_container():
         if not request.json or "chal_id" not in request.json:
             return {"error": "Invalid request"}, 400
@@ -377,7 +466,7 @@ def load(app: Flask):
     @authed_only
     @during_ctf_time_only
     @require_verified_emails
-    @ratelimit(method="POST", limit=10000, interval=60)
+    @team_or_user_ratelimit()
     def route_renew_container():
         if not request.json or "chal_id" not in request.json:
             return {"error": "Invalid request"}, 400
@@ -390,7 +479,7 @@ def load(app: Flask):
     @authed_only
     @during_ctf_time_only
     @require_verified_emails
-    @ratelimit(method="POST", limit=10000, interval=60)
+    @team_or_user_ratelimit()
     def route_restart_container():
         if not request.json or "chal_id" not in request.json:
             return {"error": "Invalid request"}, 400
@@ -405,6 +494,7 @@ def load(app: Flask):
 
     @containers_bp.route('/api/stop', methods=['POST'])
     @authed_only
+    @team_or_user_ratelimit()
     def route_stop_container():
         if not request.json or "chal_id" not in request.json:
             return {"error": "Invalid request"}, 400
@@ -442,7 +532,17 @@ def load(app: Flask):
     @containers_bp.route('/api/settings/update', methods=['POST'])
     @admins_only
     def route_update_settings():
-        keys = ["docker_base_url", "docker_hostname", "container_expiration", "container_maxmemory", "container_maxcpu", "container_min_port", "container_max_port"]
+        keys = [
+            "docker_base_url",
+            "docker_hostname",
+            "container_expiration",
+            "container_maxmemory",
+            "container_maxcpu",
+            "container_min_port",
+            "container_max_port",
+            "container_ratelimit_limit",
+            "container_ratelimit_interval",
+        ]
         for key in keys:
             setting = ContainerSettingsModel.query.filter_by(key=key).first()
             val = request.form.get(key)
@@ -465,6 +565,18 @@ def load(app: Flask):
                         val = setting.value
                     else:
                         val = "10000" if key == "container_min_port" else "10150"
+            elif key == "container_ratelimit_limit":
+                try:
+                    rl_val = int(val) if val is not None and str(val).strip() != "" else 10
+                    val = str(max(0, rl_val))
+                except (ValueError, TypeError):
+                    val = "10"
+            elif key == "container_ratelimit_interval":
+                try:
+                    ri_val = int(val) if val is not None and str(val).strip() != "" else 60
+                    val = str(max(1, ri_val))
+                except (ValueError, TypeError):
+                    val = "60"
 
             if setting:
                 setting.value = val
@@ -507,6 +619,10 @@ def load(app: Flask):
             settings["container_max_port"] = "10150"
         if not settings.get("container_expiration") or int(settings.get("container_expiration", 0) or 0) < 10:
             settings["container_expiration"] = "10"
+        if not settings.get("container_ratelimit_limit"):
+            settings["container_ratelimit_limit"] = "10"
+        if not settings.get("container_ratelimit_interval"):
+            settings["container_ratelimit_interval"] = "60"
         return render_template('container_settings.html', settings=settings)
 
     app.register_blueprint(containers_bp)

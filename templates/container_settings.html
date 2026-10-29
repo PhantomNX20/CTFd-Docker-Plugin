@@ -70,6 +70,20 @@
 					<input class="form-control" type="text" name="container_maxcpu" id="container_maxcpu"
 						placeholder="e.g. 1.5" value='{{ settings.container_maxcpu|default("") }}' />
 				</div>
+				<div class="form-group">
+					<label for="container_ratelimit_limit">
+						Rate Limit: Max Actions per Team/User (0 to disable)
+					</label>
+					<input class="form-control" type="number" min="0" name="container_ratelimit_limit" id="container_ratelimit_limit"
+						placeholder="e.g. 10" value='{{ settings.container_ratelimit_limit|default("10") }}' />
+				</div>
+				<div class="form-group">
+					<label for="container_ratelimit_interval">
+						Rate Limit: Time Window in Seconds
+					</label>
+					<input class="form-control" type="number" min="1" name="container_ratelimit_interval" id="container_ratelimit_interval"
+						placeholder="e.g. 60" value='{{ settings.container_ratelimit_interval|default("60") }}' />
+				</div>
 				<div class="col-md-12 text-center">
 					<button type="submit" tabindex="0" class="btn btn-md btn-success btn-outlined">
 						Submit
