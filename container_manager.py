@@ -35,6 +35,16 @@ class ContainerManager:
         self.settings = settings
         self.client = None
         self.app = app
+
+        # Default expiration is at least 10 minutes (600 seconds)
+        try:
+            exp_mins = int(settings.get("container_expiration") or 10)
+            if exp_mins < 10:
+                exp_mins = 10
+            self.expiration_seconds = exp_mins * 60
+        except (ValueError, TypeError):
+            self.expiration_seconds = 10 * 60
+
         if settings.get("docker_base_url") is None or settings.get("docker_base_url") == "":
             return
 
@@ -44,6 +54,7 @@ class ContainerManager:
         except ContainerException:
             print("Docker could not initialize or connect.")
             return
+
     def _get_free_port(self):
         # 1. Recupera il range
         try:
@@ -55,6 +66,14 @@ class ContainerManager:
             max_port = int(self.settings.get("container_max_port") or 10150)
         except (ValueError, TypeError):
             max_port = 10150
+
+        if min_port > max_port:
+            min_port, max_port = max_port, min_port
+
+        min_port = max(1, min(65535, min_port))
+        max_port = max(1, min(65535, max_port))
+
+        print(f"[DEBUG] Range porte: {min_port}-{max_port}")
 
         # 2. Prendi le porte già usate dal DB
         with self.app.app_context():
@@ -112,12 +131,14 @@ class ContainerManager:
             raise ContainerException(
                 "CTFd had an authentication error when connecting to Docker: " + str(e))
 
-        # Set up expiration scheduler
+        # Set up expiration scheduler (at least 10 minutes)
         try:
-            self.expiration_seconds = int(
-                settings.get("container_expiration", 0)) * 60
-        except (ValueError, AttributeError):
-            self.expiration_seconds = 0
+            exp_mins = int(settings.get("container_expiration") or 10)
+            if exp_mins < 10:
+                exp_mins = 10
+            self.expiration_seconds = exp_mins * 60
+        except (ValueError, TypeError):
+            self.expiration_seconds = 10 * 60
 
         EXPIRATION_CHECK_INTERVAL = 5
 

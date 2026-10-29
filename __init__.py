@@ -221,6 +221,19 @@ def load(app: Flask):
     register_plugin_assets_directory(app, base_path="/plugins/containers/assets/")
 
     container_settings = settings_to_dict(ContainerSettingsModel.query.all())
+    try:
+        exp = int(container_settings.get("container_expiration") or 10)
+        if exp < 10:
+            exp = 10
+        container_settings["container_expiration"] = str(exp)
+    except (ValueError, TypeError):
+        container_settings["container_expiration"] = "10"
+
+    if not container_settings.get("container_min_port"):
+        container_settings["container_min_port"] = "10000"
+    if not container_settings.get("container_max_port"):
+        container_settings["container_max_port"] = "10150"
+
     container_manager = ContainerManager(container_settings, app)
 
     containers_bp = Blueprint(
@@ -433,6 +446,23 @@ def load(app: Flask):
         for key in keys:
             setting = ContainerSettingsModel.query.filter_by(key=key).first()
             val = request.form.get(key)
+            if key == "container_expiration":
+                try:
+                    exp_val = int(val) if val is not None and str(val).strip() != "" else 10
+                    if exp_val < 10:
+                        exp_val = 10
+                    val = str(exp_val)
+                except (ValueError, TypeError):
+                    val = "10"
+            elif key in ("container_min_port", "container_max_port"):
+                if val is not None and str(val).strip() != "":
+                    try:
+                        val = str(max(1, min(65535, int(val))))
+                    except (ValueError, TypeError):
+                        val = "10000" if key == "container_min_port" else "10150"
+                else:
+                    val = "10000" if key == "container_min_port" else "10150"
+
             if setting:
                 setting.value = val
             else:

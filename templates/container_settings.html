@@ -36,10 +36,24 @@
 				</div>
 				<div class="form-group">
 					<label for="container_expiration">
-						Container Expiration in Minutes (how long a container will last before it's killed; 0 = never)
+						Container Expiration in Minutes (how long a container will last before it's killed; minimum 10 minutes)
 					</label>
-					<input class="form-control" type="text" name="container_expiration" id="container_expiration"
-						placeholder="e.g. 30" value='{{ settings.container_expiration|default("") }}' />
+					<input class="form-control" type="number" min="10" name="container_expiration" id="container_expiration"
+						placeholder="e.g. 10" value='{% if settings.container_expiration and settings.container_expiration|int >= 10 %}{{ settings.container_expiration }}{% else %}10{% endif %}' />
+				</div>
+				<div class="form-group">
+					<label for="container_min_port">
+						Port Range Minimum (start of port range for container port binding)
+					</label>
+					<input class="form-control" type="number" min="1" max="65535" name="container_min_port" id="container_min_port"
+						placeholder="e.g. 10000" value='{{ settings.container_min_port|default("10000") }}' />
+				</div>
+				<div class="form-group">
+					<label for="container_max_port">
+						Port Range Maximum (end of port range for container port binding)
+					</label>
+					<input class="form-control" type="number" min="1" max="65535" name="container_max_port" id="container_max_port"
+						placeholder="e.g. 10150" value='{{ settings.container_max_port|default("10150") }}' />
 				</div>
 				<div class="form-group">
 					<label for="container_maxmemory">
