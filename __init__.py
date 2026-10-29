@@ -461,7 +461,10 @@ def load(app: Flask):
                     except (ValueError, TypeError):
                         val = "10000" if key == "container_min_port" else "10150"
                 else:
-                    val = "10000" if key == "container_min_port" else "10150"
+                    if setting and setting.value:
+                        val = setting.value
+                    else:
+                        val = "10000" if key == "container_min_port" else "10150"
 
             if setting:
                 setting.value = val
@@ -474,7 +477,9 @@ def load(app: Flask):
         except ContainerException as err:
             flash(str(err), "error")
             return redirect(url_for(".route_containers_settings"))
-        return redirect(url_for(".route_containers_dashboard"))
+
+        flash("Impostazioni salvate con successo!", "success")
+        return redirect(url_for(".route_containers_settings"))
 
     @containers_bp.route('/dashboard', methods=['GET'])
     @admins_only
@@ -495,6 +500,13 @@ def load(app: Flask):
     @containers_bp.route('/settings', methods=['GET'])
     @admins_only
     def route_containers_settings():
-        return render_template('container_settings.html', settings=container_manager.settings)
+        settings = settings_to_dict(ContainerSettingsModel.query.all())
+        if not settings.get("container_min_port"):
+            settings["container_min_port"] = "10000"
+        if not settings.get("container_max_port"):
+            settings["container_max_port"] = "10150"
+        if not settings.get("container_expiration") or int(settings.get("container_expiration", 0) or 0) < 10:
+            settings["container_expiration"] = "10"
+        return render_template('container_settings.html', settings=settings)
 
     app.register_blueprint(containers_bp)

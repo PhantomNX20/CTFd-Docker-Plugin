@@ -6,10 +6,10 @@
 	</div>
 </div>
 <div class="container">
-	{% with messages = get_flashed_messages() %}
+	{% with messages = get_flashed_messages(with_categories=true) %}
 	{% if messages %}
-	{% for message in messages %}
-	<div class="alert alert-danger" role="alert">
+	{% for category, message in messages %}
+	<div class="alert alert-{% if category == 'error' %}danger{% elif category == 'success' %}success{% else %}{{ category }}{% endif %}" role="alert">
 		{{ message }}
 	</div>
 	{% endfor %}
@@ -17,8 +17,9 @@
 	{% endwith %}
 	<div class="row">
 		<div class="col-md-6 offset-md-3">
-			<form method="post" action="/containers/api/settings/update" accept-charset="utf-8" autocomplete="off"
-				role="form" class="form-horizontal" enctype="multipart/form-data">
+			<form method="post" action="{{ url_for('.route_update_settings') }}" accept-charset="utf-8" autocomplete="off"
+				role="form" class="form-horizontal">
+				<input type="hidden" name="nonce" value="{{ Session.nonce }}">
 				<div class="form-group">
 					<label for="docker_base_url">
 						Base URL (see instructions)
@@ -69,15 +70,14 @@
 					<input class="form-control" type="text" name="container_maxcpu" id="container_maxcpu"
 						placeholder="e.g. 1.5" value='{{ settings.container_maxcpu|default("") }}' />
 				</div>
-				<div class="col-md-13 text-center">
+				<div class="col-md-12 text-center">
 					<button type="submit" tabindex="0" class="btn btn-md btn-success btn-outlined">
 						Submit
 					</button>
 					<a class="btn btn-danger" href="{{ url_for('.route_containers_dashboard') }}">Cancel</a>
 				</div>
+			</form>
 		</div>
-		<input type="hidden" name="nonce" value="{{ Session.nonce }}">
-		</form>
 	</div>
 	<h3>Instructions</h3>
 	<p>

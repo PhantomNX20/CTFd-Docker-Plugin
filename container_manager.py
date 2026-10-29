@@ -12,7 +12,7 @@ import paramiko.ssh_exception
 import requests
 
 from CTFd.models import db
-from .models import ContainerInfoModel
+from .models import ContainerInfoModel, ContainerSettingsModel
 
 
 class ContainerException(Exception):
@@ -56,46 +56,54 @@ class ContainerManager:
             return
 
     def _get_free_port(self):
-        # 1. Recupera il range
-        try:
-            min_port = int(self.settings.get("container_min_port") or 10000)
-        except (ValueError, TypeError):
-            min_port = 10000
-
-        try:
-            max_port = int(self.settings.get("container_max_port") or 10150)
-        except (ValueError, TypeError):
-            max_port = 10150
-
-        if min_port > max_port:
-            min_port, max_port = max_port, min_port
-
-        min_port = max(1, min(65535, min_port))
-        max_port = max(1, min(65535, max_port))
-
-        print(f"[DEBUG] Range porte: {min_port}-{max_port}")
-
-        # 2. Prendi le porte già usate dal DB
         with self.app.app_context():
+            # Refresh settings from DB to stay synchronized across multiple workers
+            try:
+                db_settings = {s.key: s.value for s in ContainerSettingsModel.query.all()}
+                if db_settings:
+                    self.settings.update(db_settings)
+            except Exception:
+                pass
+
+            # 1. Recupera il range
+            try:
+                min_port = int(self.settings.get("container_min_port") or 10000)
+            except (ValueError, TypeError):
+                min_port = 10000
+
+            try:
+                max_port = int(self.settings.get("container_max_port") or 10150)
+            except (ValueError, TypeError):
+                max_port = 10150
+
+            if min_port > max_port:
+                min_port, max_port = max_port, min_port
+
+            min_port = max(1, min(65535, min_port))
+            max_port = max(1, min(65535, max_port))
+
+            print(f"[DEBUG] Range porte: {min_port}-{max_port}")
+
+            # 2. Prendi le porte già usate dal DB
             used_ports_query = db.session.query(ContainerInfoModel.port).all()
             used_ports = {int(p[0]) for p in used_ports_query if p[0] is not None}
 
-        # 3. Crea la lista e rimescolala
-        all_ports = list(range(min_port, max_port + 1))
-        random.shuffle(all_ports)
+            # 3. Crea la lista e rimescolala
+            all_ports = list(range(min_port, max_port + 1))
+            random.shuffle(all_ports)
 
-        # 4. Cerca la prima disponibile
-        for port in all_ports:
-            if port in used_ports:
-                continue
-                
-            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-                s.settimeout(0.1)
-                if s.connect_ex(('127.0.0.1', port)) != 0:
-                    print(f"[DEBUG] Porta assegnata: {port}")
-                    return port
+            # 4. Cerca la prima disponibile
+            for port in all_ports:
+                if port in used_ports:
+                    continue
                     
-        raise ContainerException("Nessuna porta disponibile nel range!")
+                with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                    s.settimeout(0.1)
+                    if s.connect_ex(('127.0.0.1', port)) != 0:
+                        print(f"[DEBUG] Porta assegnata: {port}")
+                        return port
+                        
+            raise ContainerException("Nessuna porta disponibile nel range!")
 
     def initialize_connection(self, settings, app) -> None:
         self.settings = settings
